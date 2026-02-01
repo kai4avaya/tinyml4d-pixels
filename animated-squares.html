@@ -1,0 +1,269 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scroll to Morph: Cube to World</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            /* Rainbow-like gradient background */
+            background: linear-gradient(135deg, #ffadad, #ffd6a5, #fdffb6, #caffbf, #9bf6ff, #a0c4ff, #bdb2ff, #ffc6ff);
+            background-size: 200% 200%;
+            animation: gradientBG 15s ease infinite;
+            color: #1a1a1a;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow-x: hidden; /* Prevent horizontal scroll */
+        }
+
+        @keyframes gradientBG {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100vh;
+            z-index: 1;
+            outline: none;
+        }
+
+        /* The scroll track */
+        .scroll-track {
+            height: 500vh; /* Make the page very tall to allow scrolling */
+            position: relative;
+            z-index: 2;
+            pointer-events: none; /* Let clicks pass through to canvas if needed */
+        }
+        
+        #loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 10;
+            font-size: 1.2rem;
+            color: #000000;
+        }
+    </style>
+    <!-- Three.js CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <div id="loading">Initializing System...</div>
+
+    <div id="canvas-container"></div>
+    
+    <div class="scroll-track"></div>
+
+    <script>
+        // --- Configuration ---
+        const CONFIG = {
+            cubeSize: 8, // 8x8x8 grid = 512 particles
+            particleSize: 0.15,
+            spreadCube: 4, // Dimensions of the initial big cube
+            spreadSphere: 3.5, // Radius of the target sphere
+            rotationSpeed: 0.002,
+            colors: [0x0099FF, 0xCC00CC, 0x00AA00, 0xEE0000, 0xEEAA00, 0xFF3333]
+        };
+
+        let scene, camera, renderer;
+        let particleGroup;
+        let particles = []; // Stores { mesh, startPos, endPos, rotationSpeed }
+        let scrollProgress = 0;
+        let targetScrollProgress = 0;
+
+        // --- Initialization ---
+        function init() {
+            const container = document.getElementById('canvas-container');
+
+            // 1. Scene Setup
+            scene = new THREE.Scene();
+            // Removed fog to allow gradient background to show through clearly
+            
+            // 2. Camera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.z = 8;
+
+            // 3. Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // Perf optimization
+            container.appendChild(renderer.domElement);
+
+            // 4. Create Particles
+            createParticles();
+
+            // 5. Events
+            window.addEventListener('resize', onWindowResize, false);
+            window.addEventListener('scroll', onScroll, false);
+            
+            // Remove loader
+            document.getElementById('loading').style.display = 'none';
+
+            // 6. Start Loop
+            animate();
+        }
+
+        function createParticles() {
+            particleGroup = new THREE.Group();
+            scene.add(particleGroup);
+
+            // Reusable geometry for the tiny wireframe cubes
+            // We create a BoxGeometry, then convert to EdgesGeometry for the "outlined" look
+            const boxGeo = new THREE.BoxGeometry(CONFIG.particleSize, CONFIG.particleSize, CONFIG.particleSize);
+            const edgesGeo = new THREE.EdgesGeometry(boxGeo);
+
+            const count = CONFIG.cubeSize;
+            const offset = (count - 1) / 2; // To center the grid
+            const spacing = CONFIG.spreadCube / count;
+
+            let i = 0;
+            for (let x = 0; x < count; x++) {
+                for (let y = 0; y < count; y++) {
+                    for (let z = 0; z < count; z++) {
+                        
+                        // --- 1. Cube Position (Grid) ---
+                        // Calculate grid position centered at 0,0,0
+                        const startX = (x - offset) * spacing;
+                        const startY = (y - offset) * spacing;
+                        const startZ = (z - offset) * spacing;
+                        const startPos = new THREE.Vector3(startX, startY, startZ);
+
+                        // --- 2. Sphere Position (Target) ---
+                        // We map the grid index to a point on a sphere.
+                        // We use a normalized vector from center + some noise for organic distribution
+                        // or strict mapping. Let's use the vector from center to grid point normalized.
+                        // However, a cube projected to a sphere creates dense corners.
+                        // Let's use Fibonacci Sphere distribution for even spread if we treated them as a list, 
+                        // but keeping neighbor relativity is cool. Let's project cube to sphere.
+                        
+                        const endPos = startPos.clone().normalize().multiplyScalar(CONFIG.spreadSphere);
+                        
+                        // Add a little randomness to sphere radius for a "broken" tech look
+                        const radiusVariation = 1 + (Math.random() * 0.2 - 0.1);
+                        endPos.multiplyScalar(radiusVariation);
+
+                        // --- 3. Material ---
+                        // Pick a random vibrant color
+                        const color = CONFIG.colors[Math.floor(Math.random() * CONFIG.colors.length)];
+                        const material = new THREE.LineBasicMaterial({ 
+                            color: color,
+                            transparent: true,
+                            opacity: 0.9,
+                            linewidth: 1 // Note: OpenGL limitations often lock this to 1px
+                        });
+
+                        // --- 4. Mesh Creation ---
+                        const mesh = new THREE.LineSegments(edgesGeo, material);
+                        
+                        // Set initial pos
+                        mesh.position.copy(startPos);
+                        
+                        // Random initial rotation for the particle itself
+                        mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+
+                        particleGroup.add(mesh);
+
+                        // Store data for animation
+                        particles.push({
+                            mesh: mesh,
+                            startPos: startPos,
+                            endPos: endPos,
+                            // Random tumble speed for each little cube
+                            rotSpeed: {
+                                x: (Math.random() - 0.5) * 0.02,
+                                y: (Math.random() - 0.5) * 0.02
+                            },
+                            // Random phase offset for the morphing to look less robotic
+                            delay: Math.random() * 0.5 
+                        });
+
+                        i++;
+                    }
+                }
+            }
+        }
+
+        // --- Interaction Logic ---
+
+        function onScroll() {
+            // Calculate scroll percentage (0 to 1)
+            const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+            const scrollTop = window.scrollY;
+            
+            if (docHeight > 0) {
+                // Clamp between 0 and 1
+                const rawProgress = Math.max(0, Math.min(1, scrollTop / docHeight));
+                targetScrollProgress = rawProgress;
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- Animation Loop ---
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Smooth damping for scroll value
+            scrollProgress += (targetScrollProgress - scrollProgress) * 0.05;
+
+            // Rotate the entire world group
+            // Spin faster as it becomes a world?
+            const currentRotSpeed = CONFIG.rotationSpeed + (scrollProgress * 0.002);
+            particleGroup.rotation.y += currentRotSpeed;
+            particleGroup.rotation.z += currentRotSpeed * 0.2;
+
+            // Update each particle
+            particles.forEach(p => {
+                // 1. Calculate morph factor for this specific particle
+                // Adding 'p.delay' makes outer/random pieces break away at slightly different times
+                // We map global scrollProgress (0..1) to a local progress per particle
+                // We want the range to be roughly -0.5 to 1.5 to handle the delays gracefully
+                
+                let localProgress = (scrollProgress * 1.5) - (p.delay * 0.5);
+                localProgress = Math.max(0, Math.min(1, localProgress));
+
+                // Ease the transition (Cubic ease in-out)
+                const t = localProgress < .5 ? 2 * localProgress * localProgress : -1 + (4 - 2 * localProgress) * localProgress;
+
+                // 2. Interpolate Position
+                // Current = Start + (End - Start) * t
+                p.mesh.position.x = p.startPos.x + (p.endPos.x - p.startPos.x) * t;
+                p.mesh.position.y = p.startPos.y + (p.endPos.y - p.startPos.y) * t;
+                p.mesh.position.z = p.startPos.z + (p.endPos.z - p.startPos.z) * t;
+
+                // 3. Local Rotation (Tumble)
+                // Particles spin more when they are "free" (in the middle of transition)
+                // or just spin constantly. Let's spin constantly.
+                p.mesh.rotation.x += p.rotSpeed.x;
+                p.mesh.rotation.y += p.rotSpeed.y;
+
+                // 4. Color/Opacity shift (Optional)
+                // Let's make them scale slightly during transition for a "pop" effect
+                // Scale is 1 at start, 1.5 at mid, 1 at end
+                const scale = 1 + (Math.sin(t * Math.PI) * 0.5);
+                p.mesh.scale.setScalar(scale);
+            });
+
+            renderer.render(scene, camera);
+        }
+
+        // Boot
+        init();
+
+    </script>
+</body>
+</html>
